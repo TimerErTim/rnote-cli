@@ -1,6 +1,6 @@
 ---
 
-name: Release Windows
+name: Release Windows CLI
 
 "on":
   release:
@@ -17,28 +17,11 @@ jobs:
       run:
         shell: msys2 {0}
     steps:
-      - name: Install Inno 6
-        id: install_inno
-        shell: pwsh
-        run: |
-          if (Test-Path "C:\Program Files (x86)\Inno Setup 6\") {
-            echo "inno already installed"
-          } else {
-            winget install -e --id JRSoftware.InnoSetup -v 6.4.3 --accept-package-agreements `
-              --accept-source-agreements --disable-interactivity --scope machine
-            if (Test-Path "C:\Program Files (x86)\Inno Setup 6\") {
-              echo "inno installed successfully"
-            } else {
-              throw "could not find inno's installation folder"
-            }
-          }
-
       - name: Set installer name
         id: set_installer_name
         shell: bash
         run: |
-          echo "name=rnote-win-installer-$(echo ${GITHUB_REF_NAME#v} \
-            | sed -e 's/[^A-Za-z0-9._-]/_/g')-x86_64" >> $GITHUB_OUTPUT
+          echo "name=rnote-cli-windows-x86_64.exe" >> $GITHUB_OUTPUT
 
       - name: Setup MSYS2
         uses: msys2/setup-msys2@v2
@@ -47,6 +30,21 @@ jobs:
           update: true
           install: |
             mingw-w64-x86_64-binutils
+            mingw-w64-x86_64-upx
+            unzip
+            git
+            mingw-w64-x86_64-xz
+            mingw-w64-x86_64-pkgconf
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-clang
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-autotools
+            mingw-w64-x86_64-make
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-meson
+            mingw-w64-x86_64-diffutils
+            mingw-w64-x86_64-desktop-file-utils
+            mingw-w64-x86_64-appstream
 
       - name: Install rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -54,7 +52,7 @@ jobs:
           toolchain: stable-gnu
 
       - name: Configure PATH
-        run: echo "export PATH=$PATH:/c/Users/$USER/.cargo/bin:/c/Program\ Files\ \(x86\)/Inno\ Setup\ 6" > ~/.bashrc
+        run: echo "export PATH=$PATH:/c/Users/$USER/.cargo/bin" > ~/.bashrc
 
       - name: Checkout
         uses: actions/checkout@v4
@@ -68,21 +66,34 @@ jobs:
         run: just ci=true setup-win-installer '${{ steps.set_installer_name.outputs.name }}'
 
       - name: Build
-        run: just ci=true build
+        run: meson compile cli-cargo-build -C _mesonbuild
 
-      - name: Build installer
-        run: just ci=true build-win-installer
+      - name: Optimize Binary
+        run: |
+          strip _mesonbuild/rnote-cli.exe
+          upx --best --lzma _mesonbuild/rnote-cli.exe
 
-      - name: Upload installer (workflow artifact)
+      - name: Prepare Artifact
+        shell: bash
+        id: prepare_artifact
+        run: |
+          cp _mesonbuild/rnote-cli.exe _mesonbuild/${{ steps.set_installer_name.outputs.name }}
+          cd _mesonbuild && sha256sum ${{ steps.set_installer_name.outputs.name }} > ${{ steps.set_installer_name.outputs.name }}.sha256sum
+
+      - name: Upload CLI (workflow artifact)
         uses: actions/upload-artifact@v4
         with:
-          name: rnote-win-installer-artifact
-          path: _mesonbuild/${{ steps.set_installer_name.outputs.name }}.exe
+          name: rnote-cli-windows-artifact
+          path: |
+            _mesonbuild/${{ steps.set_installer_name.outputs.name }}
+            _mesonbuild/${{ steps.set_installer_name.outputs.name }}.sha256sum
           if-no-files-found: error
 
-      - name: Upload installer (release asset)
+      - name: Upload CLI (release asset)
         if: ${{ github.event_name == 'release' }}
-        shell: powershell
+        shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload ${{ github.ref_name }} _mesonbuild/${{ steps.set_installer_name.outputs.name }}.exe
+        run: |
+          gh release upload ${{ github.ref_name }} _mesonbuild/${{ steps.set_installer_name.outputs.name }} --repo ${{ github.repository }}
+          gh release upload ${{ github.ref_name }} _mesonbuild/${{ steps.set_installer_name.outputs.name }}.sha256sum --repo ${{ github.repository }}

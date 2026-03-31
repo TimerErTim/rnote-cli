@@ -1,0 +1,70 @@
+name: Hourly Sync with Upstream
+
+on:
+  schedule:
+    - cron: '0 * * * *'
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.SYNC_PAT }}
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream remote
+        run: git remote add upstream https://github.com/flxzt/rnote.git
+
+      - name: Fetch upstream
+        run: |
+          git fetch upstream --no-tags
+
+      - name: Get latest upstream release tag
+        id: get_tag
+        run: |
+          LATEST_TAG=$(curl -sL https://api.github.com/repos/flxzt/rnote/releases/latest | jq -r .tag_name)
+          if [ "$LATEST_TAG" == "null" ] || [ -z "$LATEST_TAG" ]; then
+            echo "Could not fetch the latest release tag"
+            exit 1
+          fi
+          echo "tag=$LATEST_TAG" >> $GITHUB_OUTPUT
+
+      - name: Check if tag already exists in our fork
+        id: check_tag
+        run: |
+          if git rev-parse "${{ steps.get_tag.outputs.tag }}" >/dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Merge upstream into main and create release
+        if: steps.check_tag.outputs.exists == 'false'
+        run: |
+          LATEST_TAG=${{ steps.get_tag.outputs.tag }}
+          
+          # Checkout main
+          git checkout main
+          
+          # Merge upstream/main. This uses default behavior which fails the step on merge conflicts.
+          git merge upstream/main -m "Merge upstream/main at $LATEST_TAG"
+          
+          # Push updated main branch
+          git push origin main
+          
+          # Tag and push tag
+          git tag $LATEST_TAG
+          git push origin $LATEST_TAG
+          
+          # Create GitHub Release
+          gh release create $LATEST_TAG --title "$LATEST_TAG" --generate-notes --repo ${{ github.repository }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.SYNC_PAT }}
